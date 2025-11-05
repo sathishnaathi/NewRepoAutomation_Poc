@@ -1,0 +1,241 @@
+import os
+import base64
+import requests
+
+# GitHub credentials and configuration
+GITHUB_TOKEN = os.getenv("REPO_TOKEN")
+GITHUB_ORG = os.getenv("REPO_ORG") or "kpmg-us"
+REPO_NAME = "Automation_NewRepo"
+DEFAULT_BRANCH = "develop"
+FEATURE_BRANCH = "Feature/CICDAutomation"
+ENVIRONMENT_NAME = "UAT-PROD"
+# New: Additional branches to create from DEFAULT_BRANCH and protect
+ADDITIONAL_BRANCHES = [
+    "release",
+    "uatDeploy",
+    "prodDeploy",
+    "dev1Deploy",
+    "qa1Deploy",
+    "uat1Deploy"
+]
+
+# Deployment branches for environment
+DEPLOYMENT_BRANCHES = ["prodDeploy", "uatDeploy"]
+
+# Repository variables
+REPO_VARIABLES = {
+    "SNOW_ASSIGNEDTO": "Shruthi Angadi",
+    "SNOW_ASSIGNMENTGROUP": "US-IT-SUPP-MuleSoft-L2"
+}
+
+HEADERS = {
+    "Authorization": f"token {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github.v3+json"
+}
+
+# Teams and permissions
+teams_permissions = [
+    {"team_name": "Digital Nexus MuleSoft C4E Team", "permission": "push"},  # write => push
+    {"team_name": "Digital Nexus MuleSoft FOT Team", "permission": "push"},  # write => push
+    {"team_name": "Digital Nexus MuleSoft Release Branch Approvers", "permission": "admin"},  # admin
+    {"team_name": "Digital Nexus MuleSoft Snow Integration Approvers", "permission": "push"},  # maintain => push (used as an example)
+    {"team_name": "Digital Nexus MuleSoft Support Team", "permission": "push"},  # write => push
+    {"team_name": "KPMG US Security Managers", "permission": "pull"},  # read => pull
+    {"team_name": "mule_deployment_approvers", "permission": "triage"},  # triage (this is specific, so ensure it's correct for your needs)
+    {"team_name": "MuleSoft DevOps team", "permission": "admin"}  # admin
+]
+
+REVIEWER_TEAM = "mule_deployment_approvers"  # For environment protection
+
+def create_repository():
+    url = f"https://api.github.com/orgs/{GITHUB_ORG}/repos"
+    data = {
+        "name": REPO_NAME,
+        "private": True,
+        "auto_init": True,
+        "default_branch": "main"
+    }
+    response = requests.post(url, json=data, headers=HEADERS)
+    if response.status_code == 201:
+        print(" Repository created successfully.")
+    elif response.status_code == 422:
+        print(f" Repository '{REPO_NAME}' already exists.")
+    else:
+        print(f" Failed to create repository: {response.status_code}")
+        print(response.json())
+        response.raise_for_status()
+
+def get_branch_sha(branch):
+    url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/git/ref/heads/{branch}"
+    response = requests.get(url, headers=HEADERS)
+    response.raise_for_status()
+    return response.json()["object"]["sha"]
+
+def create_branch(branch_name, from_branch):
+    sha = get_branch_sha(from_branch)
+    url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/git/refs"
+    data = {
+        "ref": f"refs/heads/{branch_name}",
+        "sha": sha
+    }
+    response = requests.post(url, json=data, headers=HEADERS)
+    if response.status_code == 201:
+        print(f" Branch '{branch_name}' created from '{from_branch}'.")
+    elif response.status_code == 422:
+        print(f" Branch '{branch_name}' already exists.")
+    else:
+        print(f" Failed to create branch '{branch_name}': {response.status_code}")
+        print(response.json())
+        response.raise_for_status()
+
+def set_default_branch(branch):
+    url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}"
+    data = {"default_branch": branch}
+    response = requests.patch(url, json=data, headers=HEADERS)
+    if response.status_code == 200:
+        print(f" Default branch set to '{branch}'.")
+    else:
+        print(f" Failed to set default branch: {response.status_code}")
+        print(response.json())
+        response.raise_for_status()
+
+def create_feature_branch():
+    create_branch(FEATURE_BRANCH, DEFAULT_BRANCH)
+    
+def enable_branch_protection(branch):
+    url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/branches/{branch}/protection"
+    data = {
+        "required_status_checks": {
+            "strict": True,
+            "contexts": []  # You can add specific status checks here if needed
+        },
+        "enforce_admins": True,
+        "required_pull_request_reviews": {
+            "required_approving_review_count": 1,
+            "dismiss_stale_reviews": True, 
+        },
+        "restrictions": {
+            "users": [],
+            "teams": [
+                "digital-nexus-mulesoft-fot-team",
+                "digital-nexus-mulesoft-support-team",
+                "digital-nexus-mulesoft-c4e-team"
+            ]
+        }
+    }    
+    response = requests.put(url, json=data, headers=HEADERS)   
+    if response.status_code == 200:
+        print(f" Branch protection enabled for '{branch}'.")
+    else:
+        print(f" Failed to enable protection for '{branch}': {response.status_code}")
+        print(response.json())
+        response.raise_for_status()
+
+def add_team_to_repo(team_name, permission):
+    # Format the team name for URL (slug)
+    team_slug = team_name.replace(" ", "-").lower()
+
+    # GitHub API URL for adding a repository to a team
+    url = f"https://api.github.com/orgs/{GITHUB_ORG}/teams/{team_slug}/repos/{GITHUB_ORG}/{REPO_NAME}"
+
+    # Define the body for the API request
+    body = {
+        "permission": permission
+    }
+
+    # Make the API request to add the repository to the team with specified permissions
+    response = requests.put(url, headers=HEADERS, json=body)
+
+    # Check the response
+    if response.status_code == 204:
+        print(f"Successfully added repository '{REPO_NAME}' to team '{team_name}' with '{permission}' permissions.")
+    else:
+        print(f"Failed to add repository to team '{team_name}'. Response code: {response.status_code}")
+        print(f"Response message: {response.text}")
+        response.raise_for_status()
+
+def create_environment():
+    url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/environments/{ENVIRONMENT_NAME}"
+    response = requests.put(url, headers=HEADERS)
+    if response.status_code in (200, 201, 204):
+        print(f" Environment '{ENVIRONMENT_NAME}' created.")
+    else:
+        print(f"Failed to create environment '{ENVIRONMENT_NAME}': {response.status_code}")
+        print(response.json())
+
+def get_team_id(team_slug):
+    url = f"https://api.github.com/orgs/{GITHUB_ORG}/teams/{team_slug}"
+    response = requests.get(url, headers=HEADERS)
+    response.raise_for_status()
+    return response.json()["id"]
+
+def configure_environment_protection(team_id):
+    url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/environments/{ENVIRONMENT_NAME}"
+    payload = {
+        "wait_timer": 0,
+        "reviewers": [{"type": "Team", "id": team_id}],
+        "prevent_self_review": True,
+        "deployment_branch_policy": {
+            "protected_branches": False,
+            "custom_branch_policies": True
+        }
+    }
+    response = requests.put(url, headers=HEADERS, json=payload)
+    if response.status_code in (200, 201):
+        print(f"✅ Protection rules updated for environment '{ENVIRONMENT_NAME}'.")
+    else:
+        print(f"❌ Failed to update protection rules: {response.status_code}, {response.text}")
+
+def add_deployment_branch(branch_name):
+    url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/environments/{ENVIRONMENT_NAME}/deployment-branch-policies"
+    payload = {"name": branch_name}
+    response = requests.post(url, headers=HEADERS, json=payload)
+    if response.status_code in (200, 201):
+        print(f"✅ Deployment branch '{branch_name}' added or already exists.")
+    else:
+        print(f"❌ Failed to add deployment branch '{branch_name}': {response.status_code}, {response.text}")
+
+def add_repository_variables():
+    for name, value in REPO_VARIABLES.items():
+        url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/actions/variables"
+        payload = {"name": name, "value": value}
+        response = requests.post(url, headers=HEADERS, json=payload)
+        if response.status_code == 201:
+            print(f"✅ Variable '{name}' added successfully.")
+        elif response.status_code == 422:
+            print(f"⚠️ Variable '{name}' already exists. Updating...")
+            update_url = f"https://api.github.com/repos/{GITHUB_ORG}/{REPO_NAME}/actions/variables/{name}"
+            update_response = requests.patch(update_url, headers=HEADERS, json={"value": value})
+            if update_response.status_code == 204:
+                print(f"✅ Variable '{name}' updated successfully.")
+            else:
+                print(f"❌ Failed to update variable '{name}'. Response: {update_response.text}")
+        else:
+            print(f"❌ Failed to add variable '{name}'. Status: {response.status_code}, Response: {response.text}")
+
+
+def main():
+    create_repository()
+    create_branch(DEFAULT_BRANCH, "main")
+    set_default_branch(DEFAULT_BRANCH)
+    create_feature_branch()
+    # Create and protect additional branches
+    for branch in ADDITIONAL_BRANCHES:
+        create_branch(branch, DEFAULT_BRANCH)
+        enable_branch_protection(branch)
+    enable_branch_protection(DEFAULT_BRANCH)
+    create_environment()
+    # Add teams to the repository with their respective permissions
+    for team in teams_permissions:
+        add_team_to_repo(team["team_name"], team["permission"])
+    add_repository_variables()
+
+    # Configure environment protection rules
+    team_slug = REVIEWER_TEAM.lower()
+    team_id = get_team_id(team_slug)
+    configure_environment_protection(team_id)
+    for branch in DEPLOYMENT_BRANCHES:
+        add_deployment_branch(branch)
+
+if __name__ == "__main__":
+    main()
